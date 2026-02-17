@@ -30,7 +30,12 @@ final class DatabaseService {
 
     /// Opens (or creates) the SQLite database and runs any pending migrations.
     func open() throws {
-        let url = customURL ?? (try databaseURL())
+        let url: URL
+        if let custom = customURL {
+            url = custom
+        } else {
+            url = try databaseURL()
+        }
         let flags = SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX
 
         guard sqlite3_open_v2(url.path, &db, flags, nil) == SQLITE_OK, let db else {
@@ -118,7 +123,7 @@ final class DatabaseService {
                    \(DatabaseSchema.SkillGoals.createdAt),
                    \(DatabaseSchema.SkillGoals.updatedAt)
             FROM \(DatabaseSchema.SkillGoals.tableName)
-            ORDER BY \(DatabaseSchema.SkillGoals.createdAt) DESC;
+            ORDER BY \(DatabaseSchema.SkillGoals.createdAt) DESC, \(DatabaseSchema.SkillGoals.id) DESC;
             """
 
             var stmt: OpaquePointer?

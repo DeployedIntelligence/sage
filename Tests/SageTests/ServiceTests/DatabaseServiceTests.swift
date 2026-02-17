@@ -69,17 +69,20 @@ final class DatabaseServiceTests: XCTestCase {
     }
 
     func testFetchAll_orderedByCreatedAtDescending() throws {
-        try db.insert(SkillGoal(skillName: "First"))
-        // Small sleep so timestamps differ (SQLite datetime has 1-second resolution
-        // for DEFAULT CURRENT_TIMESTAMP, but we set explicit ISO8601 dates).
-        let older = SkillGoal(skillName: "Older", createdAt: Date(timeIntervalSinceNow: -60))
-        let newer = SkillGoal(skillName: "Newer", createdAt: Date())
+        let now = Date()
+        let oldest = SkillGoal(skillName: "Oldest", createdAt: now.addingTimeInterval(-120))
+        let older  = SkillGoal(skillName: "Older",  createdAt: now.addingTimeInterval(-60))
+        let newer  = SkillGoal(skillName: "Newer",  createdAt: now)
+
+        try db.insert(oldest)
         try db.insert(older)
         try db.insert(newer)
 
         let results = try db.fetchAll()
         // Most-recently created should come first.
-        XCTAssertEqual(results.first?.skillName, "Newer")
+        XCTAssertEqual(results[0].skillName, "Newer")
+        XCTAssertEqual(results[1].skillName, "Older")
+        XCTAssertEqual(results[2].skillName, "Oldest")
     }
 
     // MARK: - Fetch by ID
@@ -156,17 +159,5 @@ final class DatabaseServiceTests: XCTestCase {
         let results = try db.fetchAll()
         XCTAssertEqual(results.count, 1)
         XCTAssertEqual(results.first?.skillName, "Persistence Test")
-    }
-}
-
-// MARK: - DatabaseError Equatable (test helper)
-
-extension DatabaseError: Equatable {
-    public static func == (lhs: DatabaseError, rhs: DatabaseError) -> Bool {
-        switch (lhs, rhs) {
-        case (.notFound, .notFound): return true
-        case (.connectionFailed, .connectionFailed): return true
-        default: return false
-        }
     }
 }

@@ -1,6 +1,6 @@
 import Foundation
 
-enum DatabaseError: Error, LocalizedError {
+enum DatabaseError: Error, LocalizedError, Equatable {
     case connectionFailed(String)
     case queryFailed(String)
     case insertFailed(String)
