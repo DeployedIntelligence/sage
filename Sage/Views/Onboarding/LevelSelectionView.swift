@@ -9,7 +9,6 @@ struct LevelSelectionView: View {
         "Beginner",
         "Novice",
         "Intermediate",
-        "Upper-Intermediate",
         "Advanced",
         "Expert"
     ]
