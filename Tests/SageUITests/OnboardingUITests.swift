@@ -69,7 +69,7 @@ final class OnboardingUITests: XCTestCase {
 
     func testBackNavigationFromStepTwo() {
         advanceToStepTwo()
-        app.buttons.matching(NSPredicate(format: "label CONTAINS 'chevron'")).firstMatch.tap()
+        app.buttons["Back"].tap()
 
         XCTAssertTrue(
             app.staticTexts["What skill do you want to master?"].waitForExistence(timeout: 2),
@@ -153,16 +153,11 @@ final class OnboardingUITests: XCTestCase {
     }
 
     private func selectCurrentLevel(_ level: String) {
-        app.buttons[level].firstMatch.tap()
+        app.buttons.matching(identifier: "current-\(level)").firstMatch.tap()
     }
 
     private func selectTargetLevel(_ level: String) {
-        let matches = app.buttons.matching(identifier: level)
-        if matches.count >= 2 {
-            matches.element(boundBy: 1).tap()
-        } else {
-            matches.firstMatch.tap()
-        }
+        app.buttons.matching(identifier: "target-\(level)").firstMatch.tap()
     }
 
     private func advanceToStepThree() {

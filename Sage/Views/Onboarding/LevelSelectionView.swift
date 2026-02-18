@@ -44,7 +44,7 @@ struct LevelSelectionView: View {
                 .fontWeight(.semibold)
                 .foregroundStyle(.secondary)
 
-            levelGrid(selection: $vm.currentLevel, accent: .indigo)
+            levelGrid(selection: $vm.currentLevel, accent: .indigo, prefix: "current")
         }
     }
 
@@ -57,13 +57,13 @@ struct LevelSelectionView: View {
                 .fontWeight(.semibold)
                 .foregroundStyle(.secondary)
 
-            levelGrid(selection: $vm.targetLevel, accent: Color.accentColor)
+            levelGrid(selection: $vm.targetLevel, accent: Color.accentColor, prefix: "target")
         }
     }
 
     // MARK: - Level Grid
 
-    private func levelGrid(selection: Binding<String>, accent: Color) -> some View {
+    private func levelGrid(selection: Binding<String>, accent: Color, prefix: String) -> some View {
         LazyVGrid(
             columns: [GridItem(.flexible()), GridItem(.flexible())],
             spacing: 10
@@ -86,6 +86,7 @@ struct LevelSelectionView: View {
                 }
                 .buttonStyle(.plain)
                 .animation(.easeInOut(duration: 0.15), value: isSelected)
+                .accessibilityIdentifier("\(prefix)-\(level)")
             }
         }
     }
