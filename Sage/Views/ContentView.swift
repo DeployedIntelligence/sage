@@ -1,11 +1,10 @@
 import SwiftUI
 
-/// Root view — will be replaced with tab bar / onboarding flow in later sprints.
+/// Root view — presents the onboarding flow for now.
+/// Will be replaced with tab bar navigation once onboarding is complete.
 struct ContentView: View {
     var body: some View {
-        Text("Sage")
-            .font(.largeTitle)
-            .fontWeight(.bold)
+        OnboardingView()
     }
 }
 
