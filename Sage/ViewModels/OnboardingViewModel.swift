@@ -133,7 +133,7 @@ final class OnboardingViewModel: ObservableObject {
 
     private func save(_ goal: SkillGoal) {
         do {
-            _ = try DatabaseService.shared.insertSkillGoal(goal)
+            _ = try DatabaseService.shared.insert(goal)
         } catch {
             // Surface to error state in a future sprint.
             print("[OnboardingViewModel] Failed to save goal: \(error.localizedDescription)")
