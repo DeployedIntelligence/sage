@@ -7,7 +7,7 @@ struct LevelSelectionView: View {
 
     private let levels: [String] = [
         "Beginner",
-        "Elementary",
+        "Novice",
         "Intermediate",
         "Upper-Intermediate",
         "Advanced",
