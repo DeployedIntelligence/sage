@@ -160,4 +160,167 @@ final class DatabaseServiceTests: XCTestCase {
         XCTAssertEqual(results.count, 1)
         XCTAssertEqual(results.first?.skillName, "Persistence Test")
     }
+
+    // MARK: - Conversation insert
+
+    func testInsertConversation_returnsConversationWithID() throws {
+        let saved = try db.insert(Conversation(skillGoalId: nil, title: "Intro"))
+
+        XCTAssertNotNil(saved.id)
+        XCTAssertEqual(saved.title, "Intro")
+    }
+
+    func testInsertConversation_withSkillGoalId() throws {
+        let goal = try db.insert(SkillGoal(skillName: "Piano"))
+        let conv = try db.insert(Conversation(skillGoalId: goal.id, title: "Day 1"))
+
+        XCTAssertEqual(conv.skillGoalId, goal.id)
+    }
+
+    // MARK: - Conversation fetch
+
+    func testFetchConversations_emptyForUnknownGoal() throws {
+        let results = try db.fetchConversations(skillGoalId: 9999)
+        XCTAssertTrue(results.isEmpty)
+    }
+
+    func testFetchConversations_returnsOnlyMatchingGoal() throws {
+        let goal1 = try db.insert(SkillGoal(skillName: "Guitar"))
+        let goal2 = try db.insert(SkillGoal(skillName: "Piano"))
+        try db.insert(Conversation(skillGoalId: goal1.id, title: "Guitar chat"))
+        try db.insert(Conversation(skillGoalId: goal2.id, title: "Piano chat"))
+
+        let results = try db.fetchConversations(skillGoalId: goal1.id!)
+        XCTAssertEqual(results.count, 1)
+        XCTAssertEqual(results.first?.title, "Guitar chat")
+    }
+
+    func testFetchConversations_multipleForSameGoal() throws {
+        let goal = try db.insert(SkillGoal(skillName: "Drawing"))
+        try db.insert(Conversation(skillGoalId: goal.id, title: "Session A"))
+        try db.insert(Conversation(skillGoalId: goal.id, title: "Session B"))
+
+        let results = try db.fetchConversations(skillGoalId: goal.id!)
+        XCTAssertEqual(results.count, 2)
+    }
+
+    // MARK: - Conversation update title
+
+    func testUpdateConversationTitle_persistsNewTitle() throws {
+        let goal = try db.insert(SkillGoal(skillName: "Chess"))
+        var conv = try db.insert(Conversation(skillGoalId: goal.id, title: "Old title"))
+        conv.title = "New title"
+        try db.updateConversationTitle(conv)
+
+        let results = try db.fetchConversations(skillGoalId: goal.id!)
+        XCTAssertEqual(results.first?.title, "New title")
+    }
+
+    // MARK: - Message insert
+
+    func testInsertMessage_returnsMessageWithID() throws {
+        let conv = try db.insert(Conversation(title: "Chat"))
+        let msg = try db.insert(Message(conversationId: conv.id!, role: .user, content: "Hello"))
+
+        XCTAssertNotNil(msg.id)
+        XCTAssertEqual(msg.content, "Hello")
+        XCTAssertEqual(msg.role, .user)
+    }
+
+    func testInsertMessage_bothRoles() throws {
+        let conv = try db.insert(Conversation(title: "Chat"))
+        let userMsg = try db.insert(Message(conversationId: conv.id!, role: .user, content: "Hi"))
+        let assistantMsg = try db.insert(Message(conversationId: conv.id!, role: .assistant, content: "Hello!"))
+
+        XCTAssertEqual(userMsg.role, .user)
+        XCTAssertEqual(assistantMsg.role, .assistant)
+    }
+
+    // MARK: - Message fetch
+
+    func testFetchMessages_emptyForNewConversation() throws {
+        let conv = try db.insert(Conversation(title: "Empty"))
+        let results = try db.fetchMessages(conversationId: conv.id!)
+        XCTAssertTrue(results.isEmpty)
+    }
+
+    func testFetchMessages_returnsMessagesInChronologicalOrder() throws {
+        let now = Date()
+        let conv = try db.insert(Conversation(title: "Chat"))
+        let convId = conv.id!
+        try db.insert(Message(conversationId: convId, role: .user,      content: "First",  createdAt: now))
+        try db.insert(Message(conversationId: convId, role: .assistant, content: "Second", createdAt: now.addingTimeInterval(1)))
+        try db.insert(Message(conversationId: convId, role: .user,      content: "Third",  createdAt: now.addingTimeInterval(2)))
+
+        let results = try db.fetchMessages(conversationId: convId)
+        XCTAssertEqual(results.count, 3)
+        XCTAssertEqual(results[0].content, "First")
+        XCTAssertEqual(results[1].content, "Second")
+        XCTAssertEqual(results[2].content, "Third")
+    }
+
+    func testFetchMessages_isolatedToConversation() throws {
+        let conv1 = try db.insert(Conversation(title: "Conv 1"))
+        let conv2 = try db.insert(Conversation(title: "Conv 2"))
+        try db.insert(Message(conversationId: conv1.id!, role: .user, content: "In conv1"))
+        try db.insert(Message(conversationId: conv2.id!, role: .user, content: "In conv2"))
+
+        let results = try db.fetchMessages(conversationId: conv1.id!)
+        XCTAssertEqual(results.count, 1)
+        XCTAssertEqual(results.first?.content, "In conv1")
+    }
+
+    // MARK: - updateMessageContent
+
+    func testUpdateMessageContent_persistsNewContent() throws {
+        let conv = try db.insert(Conversation(title: "Chat"))
+        let msg  = try db.insert(Message(conversationId: conv.id!, role: .assistant, content: ""))
+
+        var updated = msg
+        updated.content = "Hello, world!"
+        try db.updateMessageContent(updated)
+
+        let fetched = try db.fetchMessages(conversationId: conv.id!)
+        XCTAssertEqual(fetched.first?.content, "Hello, world!")
+    }
+
+    // MARK: - deleteMessage
+
+    func testDeleteMessage_removesTheRow() throws {
+        let conv  = try db.insert(Conversation(title: "Chat"))
+        let msg   = try db.insert(Message(conversationId: conv.id!, role: .assistant, content: "partial"))
+
+        try db.deleteMessage(id: msg.id!)
+
+        let remaining = try db.fetchMessages(conversationId: conv.id!)
+        XCTAssertTrue(remaining.isEmpty)
+    }
+
+    func testDeleteMessage_doesNotAffectOtherMessages() throws {
+        let conv   = try db.insert(Conversation(title: "Chat"))
+        let first  = try db.insert(Message(conversationId: conv.id!, role: .user,      content: "Hi"))
+        let second = try db.insert(Message(conversationId: conv.id!, role: .assistant, content: "partial"))
+
+        try db.deleteMessage(id: second.id!)
+
+        let remaining = try db.fetchMessages(conversationId: conv.id!)
+        XCTAssertEqual(remaining.count, 1)
+        XCTAssertEqual(remaining.first?.id, first.id)
+    }
+
+    // MARK: - Message insert touches parent updated_at
+
+    func testInsertMessage_touchesConversationUpdatedAt() throws {
+        let goal = try db.insert(SkillGoal(skillName: "Yoga"))
+        let conv = try db.insert(Conversation(skillGoalId: goal.id, title: "Session"))
+        let before = conv.updatedAt
+
+        // Small delay so the timestamp can differ.
+        Thread.sleep(forTimeInterval: 0.01)
+        try db.insert(Message(conversationId: conv.id!, role: .user, content: "Hi"))
+
+        let updated = try db.fetchConversations(skillGoalId: goal.id!).first
+        XCTAssertNotNil(updated?.updatedAt)
+        XCTAssertGreaterThanOrEqual(updated!.updatedAt, before)
+    }
 }

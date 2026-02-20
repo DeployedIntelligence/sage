@@ -1,13 +1,53 @@
 import Foundation
 
-// MARK: - URLSession protocol for testability
+// MARK: - URLSession protocols for testability
 
-/// Allows `ClaudeService` to be tested without real network calls.
+/// Allows `ClaudeService` non-streaming path to be tested without real network calls.
 protocol URLSessionDataTasking {
     func data(for request: URLRequest) async throws -> (Data, URLResponse)
 }
 
 extension URLSession: URLSessionDataTasking {}
+
+/// Allows `ClaudeService` streaming path to be tested without real network calls.
+///
+/// Returns an async sequence of lines from the response body.
+protocol URLSessionBytesTasking {
+    func lines(for request: URLRequest) -> AsyncThrowingStream<String, Error>
+}
+
+extension URLSession: URLSessionBytesTasking {
+    func lines(for request: URLRequest) -> AsyncThrowingStream<String, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    let (asyncBytes, response) = try await self.bytes(for: request)
+                    guard let http = response as? HTTPURLResponse else {
+                        continuation.finish(throwing: NetworkError.unexpectedResponse("Non-HTTP response"))
+                        return
+                    }
+                    guard http.statusCode == 200 else {
+                        // Collect body for error detail then surface a typed error.
+                        var body = ""
+                        for try await byte in asyncBytes {
+                            body.append(Character(UnicodeScalar(byte)))
+                        }
+                        let err = ClaudeService.mapHTTPError(statusCode: http.statusCode, body: body)
+                        continuation.finish(throwing: err)
+                        return
+                    }
+                    for try await line in asyncBytes.lines {
+                        continuation.yield(line)
+                    }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+}
 
 /// URLSession-based client for the Anthropic Claude Messages API.
 ///
@@ -16,6 +56,7 @@ extension URLSession: URLSessionDataTasking {}
 /// - Serialises `ClaudeRequest` to JSON and deserialises `ClaudeResponse`.
 /// - Maps HTTP/network failures to typed `NetworkError` values.
 /// - Retries once on transient failures (5xx, timeout) with exponential back-off.
+/// - Supports streaming via `streamConversation()` using SSE / `URLSession.bytes(for:)`.
 final class ClaudeService {
 
     // MARK: - Singleton
@@ -36,6 +77,7 @@ final class ClaudeService {
     // MARK: - Dependencies
 
     private let session: URLSessionDataTasking
+    private let bytesSession: URLSessionBytesTasking
     private let keychain: KeychainStoring
     private let decoder: JSONDecoder
     private let encoder: JSONEncoder
@@ -44,9 +86,11 @@ final class ClaudeService {
 
     init(
         session: URLSessionDataTasking = URLSession(configuration: .ephemeral),
+        bytesSession: URLSessionBytesTasking = URLSession(configuration: .ephemeral),
         keychain: KeychainStoring = KeychainService.shared
     ) {
         self.session = session
+        self.bytesSession = bytesSession
         self.keychain = keychain
         self.decoder = JSONDecoder()
         self.encoder = JSONEncoder()
@@ -79,6 +123,114 @@ final class ClaudeService {
         )
 
         return try await perform(request, apiKey: apiKey, attempt: 0)
+    }
+
+    /// Sends a full conversation history to Claude and returns the assistant's next reply.
+    ///
+    /// Use this for multi-turn chat where prior messages must be included.
+    ///
+    /// - Parameters:
+    ///   - messages: Ordered list of prior turns (user + assistant), followed by the new user turn.
+    ///   - systemPrompt: Optional system context.
+    ///   - model: The Claude model to use. Defaults to `claude-opus-4-6`.
+    ///   - maxTokens: Maximum tokens in the response.
+    func sendConversation(
+        messages: [Message],
+        systemPrompt: String? = nil,
+        model: String = Constant.defaultModel,
+        maxTokens: Int = 2048
+    ) async throws -> ClaudeResponse {
+        let apiKey = try fetchAPIKey()
+
+        let claudeMessages = messages.map { msg in
+            ClaudeMessage(
+                role: msg.role == .user ? .user : .assistant,
+                content: msg.content
+            )
+        }
+
+        let request = ClaudeRequest(
+            model: model,
+            maxTokens: maxTokens,
+            system: systemPrompt,
+            messages: claudeMessages
+        )
+
+        return try await perform(request, apiKey: apiKey, attempt: 0)
+    }
+
+    /// Streams a full conversation history to Claude, yielding incremental text chunks.
+    ///
+    /// The returned `AsyncThrowingStream` emits each `text_delta` chunk as it arrives
+    /// from the server-sent event stream. Callers should append chunks to an in-progress
+    /// message so the UI updates token-by-token.
+    ///
+    /// - Parameters:
+    ///   - messages: Full conversation history ending with the new user turn.
+    ///   - systemPrompt: Optional system context.
+    ///   - model: The Claude model to use.
+    ///   - maxTokens: Maximum tokens in the response.
+    /// - Returns: An `AsyncThrowingStream` of text chunk strings.
+    func streamConversation(
+        messages: [Message],
+        systemPrompt: String? = nil,
+        model: String = Constant.defaultModel,
+        maxTokens: Int = 2048
+    ) -> AsyncThrowingStream<String, Error> {
+        AsyncThrowingStream { continuation in
+            Task {
+                do {
+                    let apiKey = try fetchAPIKey()
+
+                    let claudeMessages = messages.map { msg in
+                        ClaudeMessage(
+                            role: msg.role == .user ? .user : .assistant,
+                            content: msg.content
+                        )
+                    }
+
+                    let claudeRequest = ClaudeRequest(
+                        model: model,
+                        maxTokens: maxTokens,
+                        system: systemPrompt,
+                        messages: claudeMessages,
+                        stream: true
+                    )
+
+                    let urlRequest = try buildURLRequest(claudeRequest, apiKey: apiKey)
+
+                    for try await line in bytesSession.lines(for: urlRequest) {
+                        // SSE lines have the form: "data: {json}" or "data: [DONE]"
+                        // Blank lines are heartbeats — skip them.
+                        guard line.hasPrefix("data: ") else { continue }
+
+                        let jsonString = String(line.dropFirst(6)) // drop "data: "
+                        if jsonString == "[DONE]" { break }
+
+                        guard let data = jsonString.data(using: .utf8) else { continue }
+
+                        let event: SSEEvent
+                        do {
+                            event = try decoder.decode(SSEEvent.self, from: data)
+                        } catch {
+                            // Skip unparseable events (e.g. ping, message_start without delta)
+                            continue
+                        }
+
+                        if event.type == "content_block_delta",
+                           event.delta?.type == "text_delta",
+                           let chunk = event.delta?.text,
+                           !chunk.isEmpty {
+                            continuation.yield(chunk)
+                        }
+                    }
+
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+        }
     }
 
     // MARK: - Private
@@ -166,6 +318,11 @@ final class ClaudeService {
     }
 
     private func mapURLError(_ error: URLError) -> NetworkError {
+        ClaudeService.mapURLError(error)
+    }
+
+    /// Maps a `URLError` to a typed `NetworkError`. `static` so it can be called from extensions.
+    static func mapURLError(_ error: URLError) -> NetworkError {
         switch error.code {
         case .notConnectedToInternet, .networkConnectionLost:
             return .noConnection
@@ -173,6 +330,21 @@ final class ClaudeService {
             return .timeout
         default:
             return .httpError(statusCode: -1, message: error.localizedDescription)
+        }
+    }
+
+    /// Maps an HTTP status code + raw body string to a typed `NetworkError`.
+    /// `static` so it can be called from the `URLSessionBytesTasking` extension on `URLSession`.
+    static func mapHTTPError(statusCode: Int, body: String) -> NetworkError {
+        switch statusCode {
+        case 401:
+            return .invalidAPIKey
+        case 429:
+            return .rateLimited(retryAfter: nil)
+        default:
+            // Try to extract a message from the error body.
+            let message = (try? JSONDecoder().decode(ClaudeAPIError.self, from: Data(body.utf8)))?.error.message
+            return .httpError(statusCode: statusCode, message: message)
         }
     }
 }
