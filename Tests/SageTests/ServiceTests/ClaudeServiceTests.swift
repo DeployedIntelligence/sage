@@ -136,6 +136,42 @@ final class ClaudeServiceTests: XCTestCase {
             XCTFail("Unexpected error: \(error)")
         }
     }
+
+    // MARK: - sendConversation
+
+    func testSendConversation_returnsDecodedResponse() async throws {
+        let svc = makeService(data: validResponseData, response: ok200())
+        let history = [
+            Message(conversationId: 1, role: .user,      content: "How do I improve?"),
+            Message(conversationId: 1, role: .assistant, content: "Practice daily."),
+            Message(conversationId: 1, role: .user,      content: "Anything else?"),
+        ]
+        let result = try await svc.sendConversation(messages: history)
+        XCTAssertEqual(result.text, "Hello!")
+    }
+
+    func testSendConversation_throwsMissingAPIKey_whenNoKey() async {
+        let svc = makeService(apiKey: nil)
+        let history = [Message(conversationId: 1, role: .user, content: "Hi")]
+        do {
+            _ = try await svc.sendConversation(messages: history)
+            XCTFail("Expected missingAPIKey")
+        } catch NetworkError.missingAPIKey {
+            // pass
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+
+    func testSendConversation_withSystemPrompt_succeeds() async throws {
+        let svc = makeService(data: validResponseData, response: ok200())
+        let history = [Message(conversationId: 1, role: .user, content: "Start")]
+        let result = try await svc.sendConversation(
+            messages: history,
+            systemPrompt: "You are a helpful coach."
+        )
+        XCTAssertFalse(result.text.isEmpty)
+    }
 }
 
 // MARK: - Test Doubles

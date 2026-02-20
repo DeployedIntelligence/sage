@@ -88,4 +88,85 @@ final class PromptTemplatesTests: XCTestCase {
         let metric = suggestion.toCustomMetric()
         XCTAssertFalse(metric.isHigherBetter)
     }
+
+    // MARK: - coachSystem
+
+    func testCoachSystem_containsSkillName() {
+        let prompt = PromptTemplates.coachSystem(
+            skillName: "Piano",
+            currentLevel: nil,
+            targetLevel: nil,
+            metrics: []
+        )
+        XCTAssertTrue(prompt.contains("Piano"), "System prompt should contain the skill name")
+    }
+
+    func testCoachSystem_containsCurrentAndTargetLevel() {
+        let prompt = PromptTemplates.coachSystem(
+            skillName: "Chess",
+            currentLevel: "Beginner",
+            targetLevel: "Intermediate",
+            metrics: []
+        )
+        XCTAssertTrue(prompt.contains("Beginner"),     "Prompt should include current level")
+        XCTAssertTrue(prompt.contains("Intermediate"), "Prompt should include target level")
+    }
+
+    func testCoachSystem_currentLevelOnly_doesNotMentionTarget() {
+        let prompt = PromptTemplates.coachSystem(
+            skillName: "Guitar",
+            currentLevel: "Beginner",
+            targetLevel: nil,
+            metrics: []
+        )
+        XCTAssertTrue(prompt.contains("Beginner"))
+        // "wants to reach" phrasing only appears when both levels are present.
+        XCTAssertFalse(prompt.contains("wants to reach"))
+    }
+
+    func testCoachSystem_noLevels_omitsLevelContext() {
+        let prompt = PromptTemplates.coachSystem(
+            skillName: "Drawing",
+            currentLevel: nil,
+            targetLevel: nil,
+            metrics: []
+        )
+        XCTAssertFalse(prompt.contains("level and wants"))
+    }
+
+    func testCoachSystem_withMetrics_listsMetricNames() {
+        let metrics = [
+            CustomMetric(name: "Scales per minute", unit: "spm", isHigherBetter: true),
+            CustomMetric(name: "Error rate",         unit: "%",   isHigherBetter: false),
+        ]
+        let prompt = PromptTemplates.coachSystem(
+            skillName: "Piano",
+            currentLevel: nil,
+            targetLevel: nil,
+            metrics: metrics
+        )
+        XCTAssertTrue(prompt.contains("Scales per minute"), "Prompt should list metric names")
+        XCTAssertTrue(prompt.contains("Error rate"),         "Prompt should list all metrics")
+        XCTAssertTrue(prompt.contains("spm"),                "Prompt should include units")
+    }
+
+    func testCoachSystem_noMetrics_omitsMetricsSection() {
+        let prompt = PromptTemplates.coachSystem(
+            skillName: "Yoga",
+            currentLevel: nil,
+            targetLevel: nil,
+            metrics: []
+        )
+        XCTAssertFalse(prompt.contains("track the following metrics"))
+    }
+
+    func testCoachSystem_isNonEmpty() {
+        let prompt = PromptTemplates.coachSystem(
+            skillName: "Coding",
+            currentLevel: "Junior",
+            targetLevel: "Senior",
+            metrics: [CustomMetric(name: "PRs merged", unit: "PRs", isHigherBetter: true)]
+        )
+        XCTAssertFalse(prompt.isEmpty)
+    }
 }
