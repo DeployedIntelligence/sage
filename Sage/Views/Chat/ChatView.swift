@@ -56,7 +56,9 @@ struct ChatView: View {
                             .id(message.id)
                     }
 
-                    if viewModel.isLoading {
+                    // Show the animated dots only while waiting for the first streaming chunk.
+                    // Once the assistant bubble has content it renders in-line, so we hide this.
+                    if viewModel.isLoading && (viewModel.messages.last?.role != .assistant || viewModel.messages.last?.content.isEmpty == true) {
                         typingIndicator
                             .id("typing")
                             .padding(.horizontal, 16)
@@ -66,6 +68,10 @@ struct ChatView: View {
                 .padding(.bottom, 8)
             }
             .onChange(of: viewModel.messages.count) {
+                scrollToBottom(proxy: proxy)
+            }
+            // Keep the view scrolled to the bottom as streaming chunks grow the last bubble.
+            .onChange(of: viewModel.messages.last?.content) {
                 scrollToBottom(proxy: proxy)
             }
             .onChange(of: viewModel.isLoading) {

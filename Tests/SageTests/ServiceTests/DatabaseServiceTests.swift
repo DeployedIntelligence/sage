@@ -270,6 +270,44 @@ final class DatabaseServiceTests: XCTestCase {
         XCTAssertEqual(results.first?.content, "In conv1")
     }
 
+    // MARK: - updateMessageContent
+
+    func testUpdateMessageContent_persistsNewContent() throws {
+        let conv = try db.insert(Conversation(title: "Chat"))
+        let msg  = try db.insert(Message(conversationId: conv.id!, role: .assistant, content: ""))
+
+        var updated = msg
+        updated.content = "Hello, world!"
+        try db.updateMessageContent(updated)
+
+        let fetched = try db.fetchMessages(conversationId: conv.id!)
+        XCTAssertEqual(fetched.first?.content, "Hello, world!")
+    }
+
+    // MARK: - deleteMessage
+
+    func testDeleteMessage_removesTheRow() throws {
+        let conv  = try db.insert(Conversation(title: "Chat"))
+        let msg   = try db.insert(Message(conversationId: conv.id!, role: .assistant, content: "partial"))
+
+        try db.deleteMessage(id: msg.id!)
+
+        let remaining = try db.fetchMessages(conversationId: conv.id!)
+        XCTAssertTrue(remaining.isEmpty)
+    }
+
+    func testDeleteMessage_doesNotAffectOtherMessages() throws {
+        let conv   = try db.insert(Conversation(title: "Chat"))
+        let first  = try db.insert(Message(conversationId: conv.id!, role: .user,      content: "Hi"))
+        let second = try db.insert(Message(conversationId: conv.id!, role: .assistant, content: "partial"))
+
+        try db.deleteMessage(id: second.id!)
+
+        let remaining = try db.fetchMessages(conversationId: conv.id!)
+        XCTAssertEqual(remaining.count, 1)
+        XCTAssertEqual(remaining.first?.id, first.id)
+    }
+
     // MARK: - Message insert touches parent updated_at
 
     func testInsertMessage_touchesConversationUpdatedAt() throws {

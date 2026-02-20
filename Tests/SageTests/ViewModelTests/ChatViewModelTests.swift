@@ -25,15 +25,31 @@ final class ChatViewModelTests: XCTestCase {
         ChatViewModel(skillGoal: skillGoal, db: db, claude: claude)
     }
 
+    /// Builds well-formed SSE lines for a sequence of text chunks (for streaming tests).
+    private func sseLines(chunks: [String]) -> [String] {
+        var lines = chunks.map { chunk -> String in
+            let json = "{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"\(chunk)\"}}"
+            return "data: \(json)"
+        }
+        lines.append("data: [DONE]")
+        return lines
+    }
+
     private func makeClaudeService(
         data: Data? = nil,
         response: URLResponse? = nil,
         error: Error? = nil,
+        streamLines: [String]? = nil,
+        streamError: Error? = nil,
         apiKey: String? = "sk-ant-test"
     ) -> ClaudeService {
         let keychain = MockKeychain(key: apiKey)
         let session = MockURLSession(mockData: data, mockResponse: response, mockError: error)
-        return ClaudeService(session: session, keychain: keychain)
+        let bytesSession = MockBytesSession(
+            mockLines: streamLines ?? sseLines(chunks: ["Great question! Keep practising."]),
+            mockError: streamError
+        )
+        return ClaudeService(session: session, bytesSession: bytesSession, keychain: keychain)
     }
 
     private func ok200() -> HTTPURLResponse {
@@ -45,6 +61,7 @@ final class ChatViewModelTests: XCTestCase {
         )!
     }
 
+    // successResponseData is retained for compilation compatibility; streaming tests use sseLines().
     private var successResponseData: Data {
         let json = """
         {
@@ -106,14 +123,14 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertTrue(vm.messages.isEmpty)
     }
 
-    // MARK: - sendMessage — happy path
+    // MARK: - sendMessage — happy path (streaming)
 
     func testSendMessage_appendsUserMessageImmediately() async throws {
         let (db, dir) = try makeTempDB()
         defer { db.close(); try? FileManager.default.removeItem(at: dir) }
 
         let goal = try db.insert(SkillGoal(skillName: "Yoga"))
-        let claude = makeClaudeService(data: successResponseData, response: ok200())
+        let claude = makeClaudeService()
         let vm = makeViewModel(skillGoal: goal, db: db, claude: claude)
         await vm.loadConversation()
 
@@ -131,7 +148,8 @@ final class ChatViewModelTests: XCTestCase {
         defer { db.close(); try? FileManager.default.removeItem(at: dir) }
 
         let goal = try db.insert(SkillGoal(skillName: "Cooking"))
-        let claude = makeClaudeService(data: successResponseData, response: ok200())
+        // Deliver the reply in two chunks to verify they are concatenated.
+        let claude = makeClaudeService(streamLines: sseLines(chunks: ["Great question!", " Keep practising."]))
         let vm = makeViewModel(skillGoal: goal, db: db, claude: claude)
         await vm.loadConversation()
 
@@ -142,12 +160,31 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertEqual(vm.messages.last?.content, "Great question! Keep practising.")
     }
 
+    func testSendMessage_streamsChunksIntoSingleBubble() async throws {
+        let (db, dir) = try makeTempDB()
+        defer { db.close(); try? FileManager.default.removeItem(at: dir) }
+
+        let goal = try db.insert(SkillGoal(skillName: "Piano"))
+        let chunks = ["Hello", ", ", "world", "!"]
+        let claude = makeClaudeService(streamLines: sseLines(chunks: chunks))
+        let vm = makeViewModel(skillGoal: goal, db: db, claude: claude)
+        await vm.loadConversation()
+
+        vm.inputText = "Hi"
+        await vm.sendMessage()
+
+        // Streaming must not produce multiple assistant messages.
+        let assistantMessages = vm.messages.filter { $0.role == .assistant }
+        XCTAssertEqual(assistantMessages.count, 1)
+        XCTAssertEqual(assistantMessages[0].content, chunks.joined())
+    }
+
     func testSendMessage_clearsInputText() async throws {
         let (db, dir) = try makeTempDB()
         defer { db.close(); try? FileManager.default.removeItem(at: dir) }
 
         let goal = try db.insert(SkillGoal(skillName: "Drawing"))
-        let claude = makeClaudeService(data: successResponseData, response: ok200())
+        let claude = makeClaudeService()
         let vm = makeViewModel(skillGoal: goal, db: db, claude: claude)
         await vm.loadConversation()
 
@@ -162,7 +199,7 @@ final class ChatViewModelTests: XCTestCase {
         defer { db.close(); try? FileManager.default.removeItem(at: dir) }
 
         let goal = try db.insert(SkillGoal(skillName: "Spanish"))
-        let claude = makeClaudeService(data: successResponseData, response: ok200())
+        let claude = makeClaudeService(streamLines: sseLines(chunks: ["Hola de vuelta!"]))
         let vm = makeViewModel(skillGoal: goal, db: db, claude: claude)
         await vm.loadConversation()
 
@@ -174,6 +211,8 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertEqual(msgs.count, 2)
         XCTAssertEqual(msgs[0].role, .user)
         XCTAssertEqual(msgs[1].role, .assistant)
+        // The persisted content must equal the fully assembled reply.
+        XCTAssertEqual(msgs[1].content, "Hola de vuelta!")
     }
 
     // MARK: - sendMessage — guard clauses
@@ -183,7 +222,7 @@ final class ChatViewModelTests: XCTestCase {
         defer { db.close(); try? FileManager.default.removeItem(at: dir) }
 
         let goal = try db.insert(SkillGoal(skillName: "Piano"))
-        let claude = makeClaudeService(data: successResponseData, response: ok200())
+        let claude = makeClaudeService()
         let vm = makeViewModel(skillGoal: goal, db: db, claude: claude)
         await vm.loadConversation()
 
@@ -214,12 +253,31 @@ final class ChatViewModelTests: XCTestCase {
         )
     }
 
+    func testSendMessage_removesPartialBubble_onStreamError() async throws {
+        let (db, dir) = try makeTempDB()
+        defer { db.close(); try? FileManager.default.removeItem(at: dir) }
+
+        let goal = try db.insert(SkillGoal(skillName: "Coding"))
+        let streamErr = URLError(.notConnectedToInternet)
+        let claude = makeClaudeService(streamError: streamErr)
+        let vm = makeViewModel(skillGoal: goal, db: db, claude: claude)
+        await vm.loadConversation()
+
+        vm.inputText = "What should I learn next?"
+        await vm.sendMessage()
+
+        // The partial assistant bubble should have been removed on error.
+        XCTAssertFalse(vm.messages.contains { $0.role == .assistant },
+            "Partial assistant bubble should be removed on stream failure")
+        XCTAssertNotNil(vm.errorMessage)
+    }
+
     func testSendMessage_isLoading_isFalseAfterCompletion() async throws {
         let (db, dir) = try makeTempDB()
         defer { db.close(); try? FileManager.default.removeItem(at: dir) }
 
         let goal = try db.insert(SkillGoal(skillName: "Writing"))
-        let claude = makeClaudeService(data: successResponseData, response: ok200())
+        let claude = makeClaudeService()
         let vm = makeViewModel(skillGoal: goal, db: db, claude: claude)
         await vm.loadConversation()
 
@@ -247,5 +305,23 @@ private struct MockURLSession: URLSessionDataTasking {
     func data(for request: URLRequest) async throws -> (Data, URLResponse) {
         if let error = mockError { throw error }
         return (mockData ?? Data(), mockResponse ?? URLResponse())
+    }
+}
+
+private struct MockBytesSession: URLSessionBytesTasking {
+    let mockLines: [String]
+    let mockError: Error?
+
+    func lines(for request: URLRequest) -> AsyncThrowingStream<String, Error> {
+        AsyncThrowingStream { continuation in
+            if let error = mockError {
+                continuation.finish(throwing: error)
+                return
+            }
+            for line in mockLines {
+                continuation.yield(line)
+            }
+            continuation.finish()
+        }
     }
 }

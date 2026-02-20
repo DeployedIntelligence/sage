@@ -542,6 +542,60 @@ final class DatabaseService {
         }
     }
 
+    /// Updates the `content` column of an existing message row.
+    ///
+    /// Called after SSE streaming completes to persist the fully-assembled assistant reply.
+    func updateMessageContent(_ message: Message) throws {
+        try queue.sync {
+            guard let db else { throw DatabaseError.connectionFailed("Database not open") }
+            guard let id = message.id else { throw DatabaseError.queryFailed("Message has no id") }
+
+            let sql = """
+            UPDATE \(DatabaseSchema.Messages.tableName)
+            SET \(DatabaseSchema.Messages.content) = ?
+            WHERE \(DatabaseSchema.Messages.id) = ?;
+            """
+
+            var stmt: OpaquePointer?
+            defer { sqlite3_finalize(stmt) }
+
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+                throw DatabaseError.queryFailed(errmsg(db))
+            }
+
+            sqlite3_bind_text(stmt, 1, (message.content as NSString).utf8String, -1, nil)
+            sqlite3_bind_int64(stmt, 2, id)
+
+            guard sqlite3_step(stmt) == SQLITE_DONE else {
+                throw DatabaseError.queryFailed(errmsg(db))
+            }
+        }
+    }
+
+    /// Deletes a single message row by its primary key.
+    ///
+    /// Used to remove an empty/partial assistant placeholder when streaming fails.
+    func deleteMessage(id: Int64) throws {
+        try queue.sync {
+            guard let db else { throw DatabaseError.connectionFailed("Database not open") }
+
+            let sql = "DELETE FROM \(DatabaseSchema.Messages.tableName) WHERE \(DatabaseSchema.Messages.id) = ?;"
+
+            var stmt: OpaquePointer?
+            defer { sqlite3_finalize(stmt) }
+
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+                throw DatabaseError.queryFailed(errmsg(db))
+            }
+
+            sqlite3_bind_int64(stmt, 1, id)
+
+            guard sqlite3_step(stmt) == SQLITE_DONE else {
+                throw DatabaseError.queryFailed(errmsg(db))
+            }
+        }
+    }
+
     // MARK: - Row mappers (Conversation / Message)
 
     private func rowToConversation(_ stmt: OpaquePointer?) -> Conversation {

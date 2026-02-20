@@ -71,3 +71,30 @@ struct APIErrorDetail: Decodable {
     let type: String
     let message: String
 }
+
+// MARK: - Server-Sent Event (SSE) models
+
+/// Top-level SSE event envelope: `{"type":"content_block_delta", ...}` etc.
+struct SSEEvent: Decodable {
+    let type: String
+    let delta: SSEDelta?
+    let message: SSEMessageStart?
+}
+
+/// The `delta` field present in `content_block_delta` events.
+struct SSEDelta: Decodable {
+    let type: String
+    let text: String?
+}
+
+/// The `message` field present in `message_start` events (carries usage).
+struct SSEMessageStart: Decodable {
+    let usage: SSEUsage?
+}
+
+struct SSEUsage: Decodable {
+    let inputTokens: Int?
+    enum CodingKeys: String, CodingKey {
+        case inputTokens = "input_tokens"
+    }
+}

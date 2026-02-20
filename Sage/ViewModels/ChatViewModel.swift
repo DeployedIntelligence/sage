@@ -60,7 +60,10 @@ final class ChatViewModel: ObservableObject {
 
     // MARK: - Actions
 
-    /// Sends the current `inputText` to Claude and appends both the user and assistant messages.
+    /// Sends the current `inputText` to Claude using SSE streaming.
+    ///
+    /// The assistant reply appears token-by-token: a placeholder `Message` is inserted
+    /// immediately and its `content` is grown in place as chunks arrive.
     func sendMessage() async {
         let text = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !isLoading else { return }
@@ -69,7 +72,7 @@ final class ChatViewModel: ObservableObject {
         inputText = ""
         errorMessage = nil
 
-        // Append & persist user message immediately for instant UI feedback.
+        // 1. Persist & show the user message immediately for instant UI feedback.
         var userMsg = Message(conversationId: convId, role: .user, content: text)
         do {
             userMsg = try db.insert(userMsg)
@@ -82,6 +85,17 @@ final class ChatViewModel: ObservableObject {
         isLoading = true
         defer { isLoading = false }
 
+        // 2. Insert an empty assistant placeholder so the bubble appears straight away.
+        var assistantMsg = Message(conversationId: convId, role: .assistant, content: "")
+        do {
+            assistantMsg = try db.insert(assistantMsg)
+        } catch {
+            errorMessage = error.localizedDescription
+            return
+        }
+        messages.append(assistantMsg)
+
+        // 3. Stream chunks from Claude, appending each to the last message.
         do {
             let systemPrompt = PromptTemplates.coachSystem(
                 skillName: skillGoal.skillName,
@@ -90,21 +104,30 @@ final class ChatViewModel: ObservableObject {
                 metrics: skillGoal.customMetrics
             )
 
-            let response = try await claude.sendConversation(
-                messages: messages,
+            let stream = claude.streamConversation(
+                messages: messages.dropLast(), // exclude the empty placeholder
                 systemPrompt: systemPrompt
             )
 
-            let replyText = response.text
+            for try await chunk in stream {
+                // Grow the last message's content in place — SwiftUI re-renders automatically.
+                if let lastIndex = messages.indices.last {
+                    messages[lastIndex].content += chunk
+                }
+            }
 
-            var assistantMsg = Message(
-                conversationId: convId,
-                role: .assistant,
-                content: replyText
-            )
-            assistantMsg = try db.insert(assistantMsg)
-            messages.append(assistantMsg)
+            // 4. Persist the fully-assembled assistant reply to the database.
+            if let lastIndex = messages.indices.last {
+                try db.updateMessageContent(messages[lastIndex])
+            }
         } catch {
+            // On error remove the empty/partial assistant bubble and surface a message.
+            if messages.last?.role == .assistant {
+                let partial = messages.removeLast()
+                if let id = partial.id {
+                    try? db.deleteMessage(id: id)
+                }
+            }
             errorMessage = friendlyError(error)
         }
     }
